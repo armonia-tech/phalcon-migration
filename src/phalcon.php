@@ -38,11 +38,13 @@ use Phalcon\Commands\Builtin\Console;
 use Phalcon\Exception as PhalconException;
 use Phalcon\Commands\DotPhalconMissingException;
 use Phalcon\Events\Manager as EventsManager;
+use Phalcon\Loader;
 use ArmoniaMigration\MigrationCommand as PhMigrationCommand;
 
 try {
 
     $vendordir = dirname(dirname(dirname(dirname(__FILE__))));
+    $srcdir = dirname(__FILE__);
 
     if (file_exists($vendordir.'/phalcon/devtools/bootstrap/autoload.php')) {
         require $vendordir.'/phalcon/devtools/bootstrap/autoload.php';
@@ -50,6 +52,16 @@ try {
         print PHP_EOL . 'File required "/phalcon/devtools/bootstrap/autoload.php" not found.' . PHP_EOL . PHP_EOL;
         exit(1);
     }
+
+    (new Loader)->registerDirs([
+        $srcdir . DS
+    ])
+    ->registerNamespaces([
+        'ArmoniaMigration\MigrationCommand' => $srcdir . DS . 'ArmoniaMigration' . DS . 'MigrationCommand.php',
+        'ArmoniaMigration\MigrationModel' => $srcdir . DS . 'ArmoniaMigration' . DS . 'MigrationModel.php',
+        'ArmoniaMigration\MigrationOverwrite' => $srcdir . DS . 'ArmoniaMigration' . DS . 'MigrationOverwrite.php'
+    ])
+    ->register();
 
     $vendor = sprintf('Phalcon DevTools (%s)', Version::get());
     print PHP_EOL . Color::colorize($vendor, Color::FG_GREEN, Color::AT_BOLD) . PHP_EOL . PHP_EOL;

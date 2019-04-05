@@ -17,7 +17,7 @@
     },
     "minimum-stability": "stable",
     "autoload": {
-        "psr-4": { "ArmoniaMigration\\": "ArmoniaMigration" }
+        "psr-4": { "ArmoniaMigration\\": "src/ArmoniaMigration/" }
     },
     "bin": ["src/phalcon.php"]
 }

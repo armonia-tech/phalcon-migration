@@ -42,6 +42,9 @@ class MigrationOverwrite extends PhMigrations
         $optionStack->setDefaultOption('verbose', false);
         $isMorph = false;
 
+        //First time check create table phalcon_migration
+        self::connectionSetup($options);
+
         // Define versioning type to be used
         if (isset($options['tsBased']) && $optionStack->getOption('tsBased') === true) {
             VersionCollection::setType(VersionCollection::TYPE_TIMESTAMPED);
@@ -64,7 +67,6 @@ class MigrationOverwrite extends PhMigrations
         }
 
         /** @var \Phalcon\Version\IncrementalItem $initialVersion */
-        $initialVersion = self::getCurrentVersion($optionStack->getOptions());
         $completedVersions = self::getCompletedVersions($optionStack->getOptions());
         
         $migrationsDirs = [];
@@ -129,27 +131,20 @@ class MigrationOverwrite extends PhMigrations
             $direction = ModelMigration::DIRECTION_BACK;
         } else {
            // If we migrate up, we should go from the beginning to run some migrations which may have been missed
-            $versionItemsTmp = VersionCollection::sortAsc(array_merge($versionItems, [$initialVersion]));
-            $initialVersion = $versionItemsTmp[0];
             $direction = ModelMigration::DIRECTION_FORWARD;
-        }
-
-        if ($initialVersion->getVersion() == $finalVersion->getVersion()) {
-            $initialVersion->setPath($finalVersion->getPath());
         }
 
         if ((ModelMigration::DIRECTION_FORWARD === $direction) && isset($completedVersions[(string)$finalVersion])) {
             print Color::info('Version ' . (string)$finalVersion . ' was already applied');
             exit;
-        } elseif ((ModelMigration::DIRECTION_BACK === $direction) &&
-            !isset($completedVersions[(string)$initialVersion])) {
+        } elseif ((ModelMigration::DIRECTION_BACK === $direction) && !isset($completedVersions[(string)$finalVersion])) {
             print Color::info('Version ' . (string)$finalVersion . ' was already rolled back');
             exit;
         }
 
         //Directory depends on Forward or Back Migration
         if (ModelMigration::DIRECTION_BACK === $direction) {
-            $directoryIterator = $migrationsDir . DIRECTORY_SEPARATOR.$initialVersion->getVersion();
+            $directoryIterator = $migrationsDir . DIRECTORY_SEPARATOR.$finalVersion->getVersion();
         } else {
             $directoryIterator = $migrationsDir . DIRECTORY_SEPARATOR.$finalVersion->getVersion();
         }
@@ -163,7 +158,7 @@ class MigrationOverwrite extends PhMigrations
         $iterator = new DirectoryIterator($directoryIterator);
 
         $migrationStartTime = date("Y-m-d H:i:s");
-
+        $logs = ['before' => [], 'after' => []];
         //Force execute to overwrite timestamp checking in Mvc/Model/Migration
         if (ModelMigration::DIRECTION_FORWARD == $direction) {
             $initialVersion = VersionCollection::createItem('1000000000000000_at'); 
@@ -176,7 +171,10 @@ class MigrationOverwrite extends PhMigrations
                 if (!$fileInfo->isFile() || 0 !== strcasecmp($fileInfo->getExtension(), 'php')) {
                     continue;
                 }
-                ModelMigration::migrate($initialVersion, $finalVersion, $fileInfo->getBasename('.php'), $isMorph);
+                $tableName = $fileInfo->getBasename('.php');
+                $logs['before'][$tableName] = self::getTableDescription($optionStack->getOptions(), $tableName);
+                ModelMigration::migrate($initialVersion, $finalVersion, $tableName, $isMorph);
+                $logs['after'][$tableName]  = self::getTableDescription($optionStack->getOptions(), $tableName);
             }
         } else {
             if (!empty($prefix)) {
@@ -185,19 +183,117 @@ class MigrationOverwrite extends PhMigrations
 
             $tables = explode(',', $optionStack->getOption('tableName'));
             foreach ($tables as $tableName) {
+                $logs['before'][$tableName] = self::getTableDescription($optionStack->getOptions(), $tableName);
                 ModelMigration::migrate($initialVersion, $finalVersion, $tableName, $isMorph);
+                $logs['after'][$tableName] = self::getTableDescription($optionStack->getOptions(), $tableName);
             }
         }
+
 
         if (ModelMigration::DIRECTION_FORWARD == $direction) {
             self::addCurrentVersion($optionStack->getOptions(), (string)$finalVersion, $migrationStartTime);
             print Color::success('Version ' . $finalVersion . ' was successfully migrated');
+            self::logMigration($optionStack->getOptions(), (string)$finalVersion, json_encode($logs));
         } else {
-            self::removeCurrentVersion($optionStack->getOptions(), (string)$finalVersion);
+            self::removeCurrentVersion($optionStack->getOptions(), (string)$finalVersion, $migrationStartTime, json_encode($logs));
             print Color::success('Version ' . $finalVersion->getVersion() . ' was successfully rolled back');
         }
+    }
 
-        $initialVersion = $finalVersion;
+    /**
+     * Add log on table changes from migrations run
+     *
+     * @param array $options Applications options
+     * @param string $version Migration version
+     * @param string $log table changes before and after
+     */
+    public static function logMigration($options, $version, $log = '')
+    {
+        self::connectionSetup($options);
+
+        if (isset($options['migrationsInDb']) && (bool)$options['migrationsInDb']) {
+            /** @var AdapterInterface $connection */
+            $connection = self::$storage;
+            $connection->execute('UPDATE ' . self::MIGRATION_LOG_TABLE . ' SET `logs` = \'' . addslashes($log) . '\' WHERE version=\'' . $version . '\' ');
+        }
+    }
+
+    /**
+     * Scan $storage for all completed versions
+     * Copied from Phalcon/Migrations
+     *
+     * @param array $options Applications options
+     * @return array
+     */
+    public static function getCompletedVersions($options)
+    {
+        self::connectionSetup($options);
+
+        if (isset($options['migrationsInDb']) && (bool)$options['migrationsInDb']) {
+            /** @var AdapterInterface $connection */
+            $connection = self::$storage;
+            $query = 'SELECT version FROM ' . self::MIGRATION_LOG_TABLE . ' WHERE rollback_start_time is null  ORDER BY version DESC';
+            $completedVersions = $connection->query($query)->fetchAll();
+            $completedVersions = array_map(function ($version) {
+                return $version['version'];
+            }, $completedVersions);
+        } else {
+            $completedVersions = file(self::$storage, FILE_IGNORE_NEW_LINES);
+        }
+
+        return array_flip($completedVersions);
+    }
+
+    /**
+     * Remove migration version from log
+     * Copied from Phalcon/Migrations
+     *
+     * @param array $options Applications options
+     * @param string $version Migration version to remove
+     */
+    public static function removeCurrentVersion($options, $version, $startTime = null, $log = '')
+    {
+        self::connectionSetup($options);
+
+        if ($startTime === null) {
+            $startTime = date("Y-m-d H:i:s");
+        }
+        $endTime = date("Y-m-d H:i:s");
+
+        if (isset($options['migrationsInDb']) && (bool)$options['migrationsInDb']) {
+             /** @var AdapterInterface $connection */
+            $connection = self::$storage;
+            $connection->execute('UPDATE ' . self::MIGRATION_LOG_TABLE . ' SET `version` = \'rollback_' . $version . '\', rollback_start_time = \'' . $startTime . '\', rollback_end_time = \'' . $endTime . '\', `rollback_logs` = \'' . addslashes($log) . '\'   WHERE version=\'' . $version . '\' ');
+        } else {
+            $currentVersions = self::getCompletedVersions($options);
+            unset($currentVersions[$version]);
+            $currentVersions = array_keys($currentVersions);
+            sort($currentVersions);
+            file_put_contents(self::$storage, implode("\n", $currentVersions));
+        }
+    }
+
+    /**
+     * Add log on table changes from migrations run
+     *
+     * @param array $options Applications options
+     * @param string $version Migration version
+     * @param string $log table changes before and after
+     */
+    public static function getTableDescription($options, $tableName)
+    {
+        $output = '';
+        self::connectionSetup($options);
+
+        if (isset($options['migrationsInDb']) && (bool)$options['migrationsInDb']) {
+            /** @var AdapterInterface $connection */
+            $connection = self::$storage;
+            $query = 'DESCRIBE ' . $tableName;
+            $tableDesc = $connection->query($query);
+            $output = $tableDesc->fetchAll(\Phalcon\Db::FETCH_ASSOC);
+        }
+
+        return $output;
     }
 
     /**
@@ -265,6 +361,34 @@ class MigrationOverwrite extends PhMigrations
                                 'type' => Column::TYPE_TIMESTAMP,
                                 'notNull' => true,
                                 'default' => 'CURRENT_TIMESTAMP',
+                            ]
+                        ),
+                        new Column(
+                            'logs',
+                            [
+                                'type' => Column::TYPE_TEXT,
+                                'notNull' => false
+                            ]
+                        ),
+                        new Column(
+                            'rollback_start_time',
+                            [
+                                'type' => Column::TYPE_DATETIME,
+                                'notNull' => false
+                            ]
+                        ),
+                        new Column(
+                            'rollback_end_time',
+                            [
+                                'type' => Column::TYPE_DATETIME,
+                                'notNull' => false
+                            ]
+                        ),
+                        new Column(
+                            'rollback_logs',
+                            [
+                                'type' => Column::TYPE_TEXT,
+                                'notNull' => false
                             ]
                         )
                     ],

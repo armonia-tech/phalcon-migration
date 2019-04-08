@@ -26,6 +26,7 @@ class MigrationOverwrite extends PhMigrations
 {
     /**
      * Run migrations
+     * Copied from Phalcon/Migrations
      *
      * @param array $options
      *
@@ -201,6 +202,143 @@ class MigrationOverwrite extends PhMigrations
     }
 
     /**
+     * Generate migrations
+     * Copied from Phalcon/Migrations
+     *
+     * @param array $options
+     *
+     * @throws \Exception
+     * @throws \LogicException
+     * @throws \RuntimeException
+     */
+    public static function generate(array $options)
+    {
+        $optionStack = new OptionStack();
+        $listTables = new ListTablesDb();
+        $optionStack->setOptions($options);
+        $optionStack->setDefaultOption('version', null);
+        $optionStack->setDefaultOption('descr', null);
+        $optionStack->setDefaultOption('noAutoIncrement', null);
+        $optionStack->setDefaultOption('verbose', false);
+
+        $migrationsDirs = $optionStack->getOption('migrationsDir');
+        //select multiple dir
+        if (count($migrationsDirs) > 1) {
+            $question = 'Which migrations path would you like to use?' . PHP_EOL;
+            foreach ($migrationsDirs as $id => $dir) {
+                $question .= " [{$id}] $dir" . PHP_EOL;
+            }
+            fwrite(STDOUT, Color::info($question));
+            $handle = fopen("php://stdin", "r");
+            $line = (int)fgets($handle);
+            if (!isset($migrationsDirs[$line])) {
+                echo "ABORTING!\n";
+                return false;
+            }
+            fclose($handle);
+            $migrationsDir = $migrationsDirs[$line];
+        } else {
+            $migrationsDir = $migrationsDirs[0];
+        }
+        // Migrations directory
+        if ($migrationsDir && !file_exists($migrationsDir)) {
+            mkdir($migrationsDir, 0755, true);
+        }
+
+        $versionItem = $optionStack->getVersionNameGeneratingMigration();
+
+        // Path to migration dir
+        $migrationPath = rtrim($migrationsDir, '\\/') .
+            DIRECTORY_SEPARATOR . $versionItem->getVersion();
+
+        if (!file_exists($migrationPath)) {
+            if (is_writable(dirname($migrationPath)) && !$optionStack->getOption('verbose')) {
+                mkdir($migrationPath);
+            } elseif (!is_writable(dirname($migrationPath))) {
+                throw new \RuntimeException("Unable to write '{$migrationPath}' directory. Permission denied");
+            }
+        } elseif (!$optionStack->getOption('force')) {
+            throw new \LogicException('Version ' . $versionItem->getVersion() . ' already exists');
+        }
+
+        // Try to connect to the DB
+        if (!isset($optionStack->getOption('config')->database)) {
+            throw new \RuntimeException('Cannot load database configuration');
+        }
+
+        ModelMigration::setup($optionStack->getOption('config')->database, $optionStack->getOption('verbose'));
+        ModelMigration::setSkipAutoIncrement($optionStack->getOption('noAutoIncrement'));
+        ModelMigration::setMigrationPath($migrationsDir);
+
+        $wasMigrated = false;
+        if ($optionStack->getOption('tableName') === '@') {
+            $migrations = ModelMigration::generateAll($versionItem, $optionStack->getOption('exportData'));
+            if (!$optionStack->getOption('verbose')) {
+                foreach ($migrations as $tableName => $migration) {
+                    if ($tableName === self::MIGRATION_LOG_TABLE) {
+                        continue;
+                    }
+                    $tableFile = $migrationPath . DIRECTORY_SEPARATOR . $tableName . '.php';
+                    $wasMigrated = file_put_contents(
+                        $tableFile,
+                        '<?php ' . PHP_EOL . PHP_EOL . $migration
+                    ) || $wasMigrated;
+                }
+            }
+        } else {
+            if ($optionStack->getOption('tableName') == '') {
+                throw new ModelException('Please specify the table name to generate.');
+            } else {
+                $tableName = $optionStack->getOption('tableName');
+
+                $modelMigration = new ModelMigration();
+                $connection = $modelMigration->getConnection();
+                $tablesList = $connection->listTables();      
+
+                if (in_array($tableName, $tablesList)) {
+                    $prefix = $optionStack->getPrefixOption($optionStack->getOption('tableName'));
+                    if (!empty($prefix)) {
+                        $optionStack->setOption('tableName', $listTables->listTablesForPrefix($prefix));
+                    }
+
+                    if ($optionStack->getOption('tableName') == '') {
+                        print Color::info('No one table is created. You should create tables first.') . PHP_EOL;
+                        return;
+                    }
+
+                    $tables = explode(',', $optionStack->getOption('tableName'));
+                    foreach ($tables as $table) {
+                        $migration = ModelMigration::generate($versionItem, $table, $optionStack->getOption('exportData'));
+                        if (!$optionStack->getOption('verbose')) {
+                            $tableFile = $migrationPath . DIRECTORY_SEPARATOR . $table . '.php';
+                            $wasMigrated = file_put_contents(
+                                $tableFile,
+                                '<?php ' . PHP_EOL . PHP_EOL . $migration
+                            );
+                        }
+                    }
+                }else{                
+                    $migration = ModelMigration::generateBlank($versionItem, $tableName);
+                    $tableFile = $migrationPath . DIRECTORY_SEPARATOR . $tableName . '.php';
+                    $wasMigrated = file_put_contents(
+                        $tableFile,
+                        '<?php ' . PHP_EOL . PHP_EOL . $migration
+                    );
+                }
+
+                
+            }
+        }
+        
+
+        if (self::isConsole() && $wasMigrated) {
+            print Color::success('Version ' . $versionItem->getVersion() . ' was successfully generated') . PHP_EOL;
+        } elseif (self::isConsole() && !$optionStack->getOption('verbose')) {
+            print Color::info('Nothing to generate. You should create tables first.') . PHP_EOL;
+        }
+    }
+
+    /**
      * Add log on table changes from migrations run
      *
      * @param array $options Applications options
@@ -285,12 +423,15 @@ class MigrationOverwrite extends PhMigrations
         $output = '';
         self::connectionSetup($options);
 
-        if (isset($options['migrationsInDb']) && (bool)$options['migrationsInDb']) {
-            /** @var AdapterInterface $connection */
-            $connection = self::$storage;
-            $query = 'DESCRIBE ' . $tableName;
-            $tableDesc = $connection->query($query);
-            $output = $tableDesc->fetchAll(\Phalcon\Db::FETCH_ASSOC);
+        if (isset($options['migrationsInDb']) && (bool)$options['migrationsInDb'])
+        {
+            if (self::$storage->tableExists($tableName))
+            {
+                $connection = self::$storage;
+                $query = 'DESCRIBE ' . $tableName;
+                $tableDesc = $connection->query($query);
+                $output = $tableDesc->fetchAll(\Phalcon\Db::FETCH_ASSOC);
+            }            
         }
 
         return $output;

@@ -133,6 +133,62 @@ class MigrationModel extends PhModelMigration
     }
 
     /**
+     * Generate specified blank migration
+     *
+     * @param ItemInterface $version
+     * @param string        $table
+     * @param mixed         $exportData
+     *
+     * @return string
+     * @throws \Phalcon\Db\Exception
+     */
+    public static function generateBlank(ItemInterface $version, $table)
+    {
+        $snippet = new Snippet();
+        $classVersion = preg_replace('/[^0-9A-Za-z]/', '', $version->getStamp());
+        $className = Text::camelize($table).'Migration_'.$classVersion;
+        $tableDefinition = [];
+        // morph()
+        //$classData = $snippet->getMigrationMorph($className, $table, $tableDefinition);
+        $template = <<<EOD
+use Phalcon\Db\Column;
+use Phalcon\Db\Index;
+use Phalcon\Db\Reference;
+use Phalcon\Mvc\Model\Migration;
+
+/**
+ * Class %s
+ */
+class %s extends Migration
+{
+    /**
+     * Define the table structure
+     *
+     * @return void
+     */
+    public function morph()
+    {
+EOD;
+        $classData = sprintf($template, $className, $className);
+        $classData .= "\n    }\n";
+
+        // up()
+        $classData .= $snippet->getMigrationUp();
+
+        $classData .= "    }\n";
+
+        // down()
+        $classData .= $snippet->getMigrationDown();
+
+        $classData .= "    }\n";
+
+        // end of class
+        $classData .= "}\n";
+
+        return $classData;
+    }
+
+    /**
      * Find the last morph function in the previous migration files
      * Copied from Phalcon\Mvc\Model\Migration
      *

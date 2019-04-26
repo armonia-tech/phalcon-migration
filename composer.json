@@ -3,14 +3,18 @@
     "type": "library",
     "description": "This tools provide you useful scripts to generate code helping to develop faster and easy applications that use with Phalcon framework.",
     "keywords": ["framework", "phalcon", "devtools", "webtools", "phar"],
-    "license": "BSD-3-Clause",
+    "license": "BSD-3-Clause",   
     "homepage": "https://github.com/armonia-tech/phalcon-migration",
     "authors": [
         {
             "name": "Armonia Tech",
-            "email": "chinaik.lee@armonia-tech.com"
+            "email": "developer@armonia-tech.com"
         }
     ],
+    "config": {
+        "vendor-dir": "vendors",
+        "optimize-autoloader": true
+    },
     "require": {
         "php": ">=5.5.0",
         "phalcon/devtools": "^3.4"
@@ -19,5 +23,5 @@
     "autoload": {
         "psr-4": { "ArmoniaMigration\\": "src/ArmoniaMigration/" }
     },
-    "bin": ["src/phalcon.php"]
+    "bin": ["src/at-phalcon"]
 }

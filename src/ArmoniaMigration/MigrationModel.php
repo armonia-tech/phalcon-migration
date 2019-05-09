@@ -94,7 +94,7 @@ class MigrationModel extends PhModelMigration
         }
 
         if ($fromVersion->getStamp() == $toVersion->getStamp()) {
-            throw new Exception('do nothing');
+            throw new \Exception('Ignored migration with same timestamp.');
             return;
         }
 
@@ -243,7 +243,7 @@ EOD;
 
         include_once $fileName;
         if (!class_exists($className)) {
-            throw new Exception('Migration class cannot be found '.$className.' at '.$fileName);
+            throw new \Exception('Migration class cannot be found '.$className.' at '.$fileName);
         }
 
         $migration = new $className($version);
